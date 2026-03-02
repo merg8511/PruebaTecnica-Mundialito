@@ -300,3 +300,51 @@ Si dos requests llegan **simultáneamente** con la misma key y el mismo payload:
 
 El unique index en la columna `IdempotencyKey` garantiza que este manejo es correcto y seguro.
 
+---
+
+## Sprint 7 — Domain Events: Cómo ver en los logs
+
+### Eventos implementados
+
+| Evento | Cuándo se emite | Propiedades loggeadas |
+|--------|-----------------|-----------------------|
+| `TeamCreatedEvent` | Al crear un equipo (`POST /teams`) | `TeamId`, `TeamName`, `OccurredAt` |
+| `MatchResultRecordedEvent` | Al registrar resultado (`POST /matches/{id}/results`) | `MatchId`, `HomeGoals`, `AwayGoals`, `OccurredAt` |
+
+### Arquitectura del flujo
+
+1. **Domain** registra el evento en la entidad (`Team.Create`, `MatchResult.RegisterResultRecordedEvent`).
+2. **UnitOfWork.CommitAsync** extrae los eventos del ChangeTracker _antes_ de persistir, limpia la lista _después_ del commit, y loggea con pattern matching tipado.
+3. El scope de `TraceId`/`CorrelationId` creado por `ObservabilityMiddleware` fluye automáticamente a todos los loggers del request, incluido `UnitOfWork`.
+
+### Ejemplo de log esperado
+
+Cuando se crea un equipo:
+```
+info: Mundialito.Infrastructure.Persistence.UnitOfWork[0]
+      DomainEvent dispatched: TeamCreatedEvent TeamId=3fa85f64-... TeamName=Team Alpha OccurredAt=2026-03-02T10:30:00Z
+      => TraceId: 00-abcdef... CorrelationId: 550e8400-...
+```
+
+Cuando se registra un resultado:
+```
+info: Mundialito.Infrastructure.Persistence.UnitOfWork[0]
+      DomainEvent dispatched: MatchResultRecordedEvent MatchId=1a2b3c4d-... HomeGoals=2 AwayGoals=1 OccurredAt=2026-03-02T10:31:00Z
+      => TraceId: 00-abcdef... CorrelationId: 550e8400-...
+```
+
+### Cómo verificar
+
+```bash
+# 1. Crear un equipo y observar logs de la consola
+curl -s -X POST http://localhost:5000/teams \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: verify-sprint7-team" \
+  -d '{"name":"Sprint 7 Team"}' | jq .
+
+# En la consola del servidor debe aparecer:
+# DomainEvent dispatched: TeamCreatedEvent TeamId=... TeamName=Sprint 7 Team OccurredAt=...
+
+# 2. Para filtrar solo los eventos en los logs (Linux/Mac):
+dotnet run --project src/Mundialito.Api | grep "DomainEvent dispatched"
+```
