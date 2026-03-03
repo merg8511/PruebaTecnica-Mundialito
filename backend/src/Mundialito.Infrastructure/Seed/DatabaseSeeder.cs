@@ -18,17 +18,17 @@ namespace Mundialito.Infrastructure.Seed;
 /// - La coherencia goles-por-jugador == homeGoals/awayGoals se valida antes de insertar.
 ///
 /// Tabla de posiciones resultante:
-///   Team A: Played=2, W=1, D=1, L=0 → 4 pts | GF=3 GA=2 GD=+1
-///   Team B: Played=2, W=1, D=0, L=1 → 3 pts | GF=4 GA=2 GD=+2
-///   Team C: Played=1, W=0, D=1, L=0 → 1 pt  | GF=1 GA=1 GD=0
-///   Team D: Played=1, W=0, D=0, L=1 → 0 pts | GF=0 GA=3 GD=-3
+///   Manchester City: Played=2, W=1, D=1, L=0 → 4 pts | GF=3 GA=2 GD=+1
+///   Real Madrid:     Played=2, W=1, D=0, L=1 → 3 pts | GF=4 GA=2 GD=+2
+///   Barcelona:       Played=1, W=0, D=1, L=0 → 1 pt  | GF=1 GA=1 GD=0
+///   Arsenal:         Played=1, W=0, D=0, L=1 → 0 pts | GF=0 GA=3 GD=-3
 ///
 /// Goleadores (scorers):
-///   Team A Player 1: 2 (match A-B) + 1 (match A-C) = 3 total
-///   Team B Player 1: 1 (match A-B)
-///   Team C Player 1: 1 (match A-C)
-///   Team B Player 2: 2 (match B-D)
-///   Team B Player 3: 1 (match B-D)
+///   Manchester City Player 1: 2 (match City-Madrid) + 1 (match City-Barca) = 3 total
+///   Real Madrid Player 1: 1 (match City-Madrid)
+///   Barcelona Player 1: 1 (match City-Barca)
+///   Real Madrid Player 2: 2 (match Madrid-Arsenal)
+///   Real Madrid Player 3: 1 (match Madrid-Arsenal)
 /// </summary>
 public sealed class DatabaseSeeder
 {
@@ -55,7 +55,7 @@ public sealed class DatabaseSeeder
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
         // ── 1. Teams ──────────────────────────────────────────────────────────
-        var teamNames = new[] { "Team A", "Team B", "Team C", "Team D" };
+        var teamNames = new[] { "Manchester City", "Real Madrid", "Barcelona", "Arsenal" };
         var teams     = new List<Team>(4);
 
         foreach (var name in teamNames)
@@ -108,12 +108,12 @@ public sealed class DatabaseSeeder
         // Scheduled dates: 2026-04-01 through 2026-04-06 at 18:00 UTC
         var baseDate = new DateTime(2026, 4, 1, 18, 0, 0, DateTimeKind.Utc);
 
-        // Match 0: Team A vs Team B → Played  (2-1)
-        // Match 1: Team A vs Team C → Played  (1-1)
-        // Match 2: Team B vs Team D → Played  (3-0)
-        // Match 3: Team A vs Team D → Scheduled
-        // Match 4: Team B vs Team C → Scheduled
-        // Match 5: Team C vs Team D → Scheduled
+        // Match 0: Manchester City vs Real Madrid → Played  (2-1)
+        // Match 1: Manchester City vs Barcelona  → Played  (1-1)
+        // Match 2: Real Madrid vs Arsenal        → Played  (3-0)
+        // Match 3: Manchester City vs Arsenal    → Scheduled
+        // Match 4: Real Madrid vs Barcelona      → Scheduled
+        // Match 5: Barcelona vs Arsenal          → Scheduled
         var matchDefs = new (Team Home, Team Away, DateTime ScheduledAt)[]
         {
             (teamA, teamB, baseDate.AddDays(0)),
@@ -157,8 +157,8 @@ public sealed class DatabaseSeeder
                 // Goals must sum to HomeGoals for home players and AwayGoals for away players.
                 Goals = new[]
                 {
-                    (PlayerIndex: 0, Team: teamA, Goals: 2),  // Team A Player 1 → 2 goals
-                    (PlayerIndex: 0, Team: teamB, Goals: 1),  // Team B Player 1 → 1 goal
+                    (PlayerIndex: 0, Team: teamA, Goals: 2),  // Manchester City Player 1 → 2 goals
+                    (PlayerIndex: 0, Team: teamB, Goals: 1),  // Real Madrid Player 1 → 1 goal
                 }
             },
             new
@@ -170,8 +170,8 @@ public sealed class DatabaseSeeder
                 AwayGoals = 1,
                 Goals = new[]
                 {
-                    (PlayerIndex: 0, Team: teamA, Goals: 1),  // Team A Player 1 → 1 goal
-                    (PlayerIndex: 0, Team: teamC, Goals: 1),  // Team C Player 1 → 1 goal
+                    (PlayerIndex: 0, Team: teamA, Goals: 1),  // Manchester City Player 1 → 1 goal
+                    (PlayerIndex: 0, Team: teamC, Goals: 1),  // Barcelona Player 1 → 1 goal
                 }
             },
             new
@@ -183,8 +183,8 @@ public sealed class DatabaseSeeder
                 AwayGoals = 0,
                 Goals = new[]
                 {
-                    (PlayerIndex: 1, Team: teamB, Goals: 2),  // Team B Player 2 → 2 goals
-                    (PlayerIndex: 2, Team: teamB, Goals: 1),  // Team B Player 3 → 1 goal
+                    (PlayerIndex: 1, Team: teamB, Goals: 2),  // Real Madrid Player 2 → 2 goals
+                    (PlayerIndex: 2, Team: teamB, Goals: 1),  // Real Madrid Player 3 → 1 goal
                 }
             },
         };
