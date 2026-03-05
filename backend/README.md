@@ -419,3 +419,160 @@ curl http://localhost:8080/scorers | jq .
 docker-compose down          # detiene sin borrar datos
 docker-compose down -v       # detiene y borra el volumen (resetea BD)
 ```
+
+---
+
+## Sprint 9 Extendido — QA Final: Cómo verificar requisitos
+
+### Compilar y ejecutar pruebas
+
+```bash
+# 1. Compilar toda la solución (incluye proyecto de tests)
+dotnet build Mundialito.sln
+
+# 2. Ejecutar pruebas unitarias + integración
+#    NOTA: los integration tests requieren Docker corriendo (Testcontainers levanta SQL Server)
+dotnet test Mundialito.sln --logger "console;verbosity=normal"
+```
+
+> Las pruebas de integración usan **Testcontainers.MsSql** — levantan un contenedor SQL Server
+> automáticamente por sesión de tests, aplican migraciones y seed, y lo destruyen al finalizar.
+> Docker Desktop debe estar corriendo antes de ejecutar `dotnet test`.
+
+---
+
+### Levantar con Docker (modo producción)
+
+```bash
+docker-compose up --build
+```
+
+Logs esperados:
+```
+DB bootstrap attempt 1/10...
+Migrations applied successfully.
+Starting database seed (4 teams / 5 players / 6 matches / 3 results)...
+Seed applied successfully. Teams=4 Players=20 Matches=6 (Played=3 Scheduled=3) Results=3.
+DB bootstrap complete.
+```
+
+---
+
+### Verificar seed (standings y scorers post-docker)
+
+```bash
+# Tabla de posiciones — debe mostrar Manchester City primero (4 pts)
+curl http://localhost:8080/standings | jq .
+
+# Goleadores — Manchester City Player 1 debe aparecer primero (3 goles)
+curl http://localhost:8080/scorers?sortBy=goals&sortDirection=desc | jq .
+```
+
+**Tabla de posiciones esperada (seed real):**
+
+| Equipo           | Pts | PJ | G | E | P | GF | GC | GD  |
+|------------------|-----|----|----|---|---|----|----|-----|
+| Manchester City  |  4  |  2 | 1 | 1 | 0 |  3 |  2 | +1  |
+| Real Madrid      |  3  |  2 | 1 | 0 | 1 |  4 |  2 | +2  |
+| Barcelona        |  1  |  1 | 0 | 1 | 0 |  1 |  1 |  0  |
+| Arsenal          |  0  |  1 | 0 | 0 | 1 |  0 |  3 | -3  |
+
+**Goleadores esperados:**
+
+| Jugador                    | Equipo          | Goles |
+|----------------------------|-----------------|-------|
+| Manchester City Player 1   | Manchester City |   3   |
+| Real Madrid Player 2       | Real Madrid     |   2   |
+| Real Madrid Player 1       | Real Madrid     |   1   |
+| Real Madrid Player 3       | Real Madrid     |   1   |
+| Barcelona Player 1         | Barcelona       |   1   |
+
+---
+
+### Verificar idempotencia (curls)
+
+```bash
+# Caso 1: Falta header → 400 IDEMPOTENCY_KEY_REQUIRED
+curl -s -X POST http://localhost:8080/teams \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Team Alpha"}' | jq .
+
+# Caso 2: Primera llamada → 201 Created
+curl -s -X POST http://localhost:8080/teams \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: sprint9-verify-001" \
+  -d '{"name":"Sprint 9 Team"}' | jq .
+
+# Caso 3: Replay (mismo key + mismo body) → 201 mismo body exacto
+curl -s -X POST http://localhost:8080/teams \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: sprint9-verify-001" \
+  -d '{"name":"Sprint 9 Team"}' | jq .
+
+# Caso 4: Conflict (mismo key + body distinto) → 409 IDEMPOTENCY_KEY_CONFLICT
+curl -s -X POST http://localhost:8080/teams \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: sprint9-verify-001" \
+  -d '{"name":"COMPLETELY DIFFERENT"}' | jq .
+```
+
+---
+
+### Verificar DELETE idempotente (siempre 204)
+
+```bash
+# DELETE recurso inexistente → 204 (sin body)
+curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE http://localhost:8080/teams/00000000-0000-0000-0000-000000000000
+
+# Esperado: 204
+```
+
+---
+
+### Verificar paginación inválida → 400 PAGINATION_INVALID
+
+```bash
+# sortBy inválido en /teams → 400 + errorCode=PAGINATION_INVALID + traceId
+curl -s "http://localhost:8080/teams?sortBy=invalidField" | jq .
+
+# sortBy inválido en /scorers → igual
+curl -s "http://localhost:8080/scorers?sortBy=badField" | jq .
+```
+
+---
+
+### Documentación generada
+
+| Artefacto | Ruta |
+|-----------|------|
+| Diagrama de arquitectura (PlantUML) | [`docs/architecture.puml`](docs/architecture.puml) |
+| Colección Postman | [`docs/postman/Mundialito.postman_collection.json`](docs/postman/Mundialito.postman_collection.json) |
+| Entorno Postman | [`docs/postman/Mundialito.postman_environment.json`](docs/postman/Mundialito.postman_environment.json) |
+| Proyecto de tests | [`tests/Mundialito.Tests/`](tests/Mundialito.Tests/) |
+
+Para visualizar el diagrama PlantUML:
+- [PlantUML Online](https://www.plantuml.com/plantuml/uml/) — pegar el contenido de `docs/architecture.puml`
+- VS Code con extensión **PlantUML** (jebbs.plantuml)
+
+---
+
+## Criterios de Evaluación — Cobertura
+
+| # | Criterio | Peso | Evidencia en el código / tests / docs |
+|---|----------|------|---------------------------------------|
+| 1 | **Clean Architecture** — 4 capas, dependencias hacia adentro | Alta | `src/Mundialito.Domain`, `.Application`, `.Infrastructure`, `.Api` — ninguna referencia inversa |
+| 2 | **CQRS estricto** — EF solo write, Dapper solo read | Alta | `Infrastructure/Persistence/` (EF) + `Infrastructure/Dapper/` (Dapper) — 0 cruces verificados por grep |
+| 3 | **Unit of Work** — `SaveChangesAsync` solo en UoW | Alta | `UnitOfWork.cs:50`, `IdempotencyUnitOfWork.cs:24`; grep en toda la solución confirma 0 calls fuera |
+| 4 | **Result Pattern** — sin excepciones como control de flujo | Alta | `Domain/SeedWork/Result.cs`; todos los handlers retornan `Result<T>` — tests D1–D7 en `Unit/ResultPatternTests.cs` |
+| 5 | **Idempotencia POST** — replay exacto + conflict 409 + missing 400 | Alta | `IdempotencyFilterAttribute.cs` (persist-before-respond) — tests A1–A4 en `Integration/IdempotencyTests.cs` |
+| 6 | **DELETE siempre 204** | Media | `ApiResponseMapper.ToNoContent()` siempre; `DeleteTeamUseCase` maneja resource-not-found — tests B1–B3 en `Integration/Delete204Tests.cs` |
+| 7 | **Paginación/filtros/sort en DB** | Alta | `*QueryService.cs` → `ORDER BY + OFFSET/FETCH + COUNT(1)` (SQL docs en `docs/sql/`) |
+| 8 | **Error envelope único con traceId** | Media | `ApiResponseMapper.Error()` + `ExceptionHandlingMiddleware` — verificado en tests A1, A4, Postman/Errors folder |
+| 9 | **Observabilidad** — traceId + correlationId + elapsedMs | Media | `ObservabilityMiddleware.cs` — scope fluye a todos los loggers del request |
+| 10 | **Domain Events** — loggeados con scope | Media | `UnitOfWork.DispatchEvent()` — `TeamCreatedEvent` + `MatchResultRecordedEvent` |
+| 11 | **Seed 4/5/6/3 exacto** | Media | `DatabaseSeeder.cs` — coherencia inline-validada; standings/scorers listos on first boot |
+| 12 | **Docker** — `docker-compose up` levanta API + SQL Server | Alta | `Dockerfile` multi-stage + `docker-compose.yml` con healthcheck |
+| 13 | **Diagrama de arquitectura** | Baja | [`docs/architecture.puml`](docs/architecture.puml) — PlantUML completo (CQRS, UoW, Events, Idempotency, Docker) |
+| 14 | **Colección Postman** | Baja | [`docs/postman/`](docs/postman/) — 8 carpetas, scripts de captura, casos idempotencia/errores |
+| 15 | **Pruebas automatizadas** | Media | `tests/Mundialito.Tests/` — xUnit + Testcontainers (integration) + unit tests |

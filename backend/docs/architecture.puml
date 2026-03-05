@@ -1,0 +1,154 @@
+@startuml Mundialito — Architecture (Clean Architecture + CQRS)
+
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam componentStyle rectangle
+skinparam defaultFontName Segoe UI
+skinparam defaultFontSize 13
+skinparam arrowColor #555555
+skinparam componentBackgroundColor #FFFFFF
+skinparam componentBorderColor #AAAAAA
+skinparam packageBackgroundColor #F0F4FF
+skinparam packageBorderColor #6699CC
+skinparam noteBackgroundColor #FFFDE7
+skinparam noteBorderColor #F9A825
+
+title Mundialito de Fútbol — Architecture Diagram\n(Clean Architecture + CQRS + EF Write / Dapper Read)
+
+' ─── DOCKER BOUNDARY ──────────────────────────────────────────────────────────
+rectangle "Docker Compose" as Docker #EEF6EE {
+
+  ' ─── API CONTAINER ──────────────────────────────────────────────────────────
+  rectangle "mundialito_api  (ASP.NET Core 9)" as ApiContainer #E8F0FE {
+
+    ' Layer: Api
+    package "Mundialito.Api  [Layer: API]" as ApiLayer {
+      component "[Controllers]\nTeamsController\nPlayersController\nMatchesController\nStandingsController\nScorersController" as Controllers
+      component "[Middlewares]\nExceptionHandlingMiddleware\nObservabilityMiddleware\n(traceId · correlationId · elapsedMs)" as Middlewares
+      component "[Filter]\nIdempotencyFilterAttribute\n(SHA-256 · persist-before-respond)" as IdempFilter
+      component "[Mapping]\nApiResponseMapper\n(error envelope · status codes)" as Mapper
+    }
+
+    ' Layer: Application
+    package "Mundialito.Application  [Layer: Application]" as AppLayer {
+      component "[Use Cases / Commands]\nCreateTeamUseCase\nUpdateTeamUseCase\nDeleteTeamUseCase\nCreatePlayerUseCase\nUpdatePlayerUseCase\nDeletePlayerUseCase\nCreateMatchUseCase\nRecordMatchResultUseCase" as UseCases
+      component "[Abstractions]\nIUnitOfWork\nIIdempotencyUnitOfWork\nITeamRepository\nIPlayerRepository\nIMatchRepository\nIMatchResultRepository\nI*QueryService" as Abstractions
+      component "[Common]\nPageRequest · PaginationResponse\nPaginationGuards · SortByFields\nResult<T> pattern" as Common
+    }
+
+    ' Layer: Domain
+    package "Mundialito.Domain  [Layer: Domain]" as DomainLayer {
+      component "[Entities]\nTeam · Player\nMatch · MatchResult · MatchGoal" as Entities
+      component "[Domain Events]\nTeamCreatedEvent\nMatchResultRecordedEvent" as DomainEvents
+      component "[SeedWork]\nResult<T> · DomainErrors\nEntity (base) · DomainEvent (base)" as SeedWork
+    }
+
+    ' Layer: Infrastructure
+    package "Mundialito.Infrastructure  [Layer: Infrastructure]" as InfraLayer {
+
+      rectangle "Write Side (EF Core)" as WriteSide #FFF3E0 {
+        component "[EF Core]\nMundialitoDbContext\nTeamRepository\nPlayerRepository\nMatchRepository\nMatchResultRepository" as EFRepos
+        component "[UnitOfWork]\nUnitOfWork\n(CommitAsync → SaveChangesAsync\n+ domain events dispatch)" as UoW
+        component "[Idempotency Write]\nIdempotencyRepository\nIdempotencyUnitOfWork" as IdempWrite
+        database "EF Migrations\n(InitialCreate)" as Migrations
+      }
+
+      rectangle "Read Side (Dapper)" as ReadSide #E8F5E9 {
+        component "[Dapper Query Services]\nTeamsQueryService\nPlayersQueryService\nMatchesQueryService\nStandingsQueryService\nScorersQueryService\n(ORDER BY + OFFSET/FETCH + COUNT)" as DapperSvcs
+        component "[Idempotency Read]\nIdempotencyQueryService\n(lookup before write)" as IdempRead
+        component "[SqlConnectionFactory]\n(IDbConnectionFactory)" as ConnFactory
+      }
+
+      component "[DatabaseSeeder]\n4 Teams · 5 Players/team\n6 Matches · 3 Results+Goals\n(runs once if DB empty)" as Seeder
+    }
+
+  }
+
+  ' ─── SQL SERVER CONTAINER ───────────────────────────────────────────────────
+  database "SQL Server 2022\n(mundialito_db)" as SQLServer #FBE9E7 {
+    component "Teams · Players\nMatches · MatchResults\nMatchGoals\nIdempotencyKeys" as Tables
+  }
+
+}
+
+' ─── EXTERNAL CLIENT ──────────────────────────────────────────────────────────
+actor "HTTP Client\n(curl / Postman /\nFrontend)" as Client
+
+' ─── FUTURE FRONTEND ──────────────────────────────────────────────────────────
+rectangle "Frontend (Next.js)\n[future / external]" as Frontend #F3E5F5 {
+  component "Pages\n(standings · scorers\nteams · matches)" as Pages
+}
+
+' ─── OBSERVABILITY NOTE ───────────────────────────────────────────────────────
+note right of Middlewares
+  Every request:
+  traceId = Activity.Current?.Id ?? TraceIdentifier
+  correlationId = X-Correlation-Id header (or new GUID)
+  elapsedMs logged on completion
+  Scope flows into UnitOfWork logs
+end note
+
+' ─── IDEMPOTENCY FLOW NOTE ────────────────────────────────────────────────────
+note right of IdempFilter
+  POST only:
+  1. Validate Idempotency-Key header → 400 if missing
+  2. SHA-256(body bytes) → requestHash
+  3. Dapper lookup → replay if match, 409 if conflict
+  4. Execute controller → capture response (MemoryStream)
+  5. EF + UoW persist → then write to client
+  6. Race: unique constraint → re-lookup → replay or 409
+end note
+
+' ─── DOMAIN EVENTS NOTE ──────────────────────────────────────────────────────
+note bottom of UoW
+  CommitAsync:
+  a) Extract domain events from ChangeTracker
+  b) SaveChangesAsync (in transaction)
+  c) Clear events on entities
+  d) Log: TeamCreatedEvent / MatchResultRecordedEvent
+     (structured logging, inherits TraceId/CorrelationId scope)
+end note
+
+' ─── ARROWS: request flow ─────────────────────────────────────────────────────
+Client --> Middlewares : HTTP request
+Frontend --> Middlewares : HTTP request
+Middlewares --> IdempFilter : POST endpoints
+Middlewares --> Controllers : GET/PUT/DELETE
+IdempFilter --> Controllers : execute (capture response)
+Controllers --> UseCases : Commands (write)
+Controllers --> DapperSvcs : Queries (read)
+Controllers --> Mapper : map Result<T> → IActionResult
+
+' write side
+UseCases --> Abstractions : via interfaces
+Abstractions ..> EFRepos : implemented by
+Abstractions ..> UoW : implemented by
+UseCases --> EFRepos : ITeamRepository etc.
+UseCases --> UoW : CommitAsync
+UoW --> EFRepos : SaveChangesAsync
+EFRepos --> Migrations : EF Core schema
+
+' read side
+DapperSvcs --> ConnFactory : IDbConnectionFactory
+ConnFactory --> SQLServer : SqlConnection
+DapperSvcs --> SQLServer : SELECT (Dapper)
+
+' idempotency
+IdempFilter --> IdempRead : lookup (Dapper)
+IdempFilter --> IdempWrite : persist (EF + UoW)
+IdempWrite --> SQLServer : INSERT IdempotencyKeys
+IdempRead --> SQLServer : SELECT IdempotencyKeys
+
+' EF write
+UoW --> SQLServer : INSERT / UPDATE / DELETE
+Seeder --> SQLServer : seed on startup
+
+' domain events
+UoW --> DomainEvents : dispatch/log
+DomainLayer --> AppLayer : <<uses>>
+AppLayer --> DomainLayer : <<depends on>>
+InfraLayer --> AppLayer : <<implements contracts>>
+ApiLayer --> AppLayer : <<orchestrates>>
+ApiLayer --> InfraLayer : <<DI composition>>
+
+@enduml
